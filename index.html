@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=3.0, user-scalable=yes">
+  <title>座位选择</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+    
+    body {
+      overflow: hidden;
+      background: #f0f0f0;
+      touch-action: none;
+    }
+    
+    #canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      cursor: grab;
+    }
+    
+    #canvas:active {
+      cursor: grabbing;
+    }
+    
+    .loading {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 16px;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div class="loading" id="loading">加载中...</div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const loading = document.getElementById('loading');
+    
+    // 设置 Canvas 尺寸
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = window.innerWidth * dpr;
+    canvas.height = window.innerHeight * dpr;
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    ctx.scale(dpr, dpr);
+    
+    // 座位数据
+    let seats = [];
+    let areas = [];
+    let selectedSeats = new Set();
+    
+    // 视图状态
+    let scale = 0.5;
+    let offsetX = 0;
+    let offsetY = 0;
+    let isDragging = false;
+    let lastX = 0;
+    let lastY = 0;
+    let lastDistance = 0;
+    
+    // 加载座位数据
+    function loadSeatData(templateData) {
+      console.log('加载座位数据:', templateData);
+      
+      const areaSeats = templateData.areaSeats || {};
+      const priceInfo = templateData.priceInfo || {};
+      const prices = priceInfo.prices || [];
+      const seatPrices = priceInfo.seatPrices || {};
+      
+      areas = templateData.areas || [];
+      seats = [];
+      
+      // 解析座位
+      areas.forEach(area => {
+        const areaId = area.id;
+        const areaSeatsData = areaSeats[areaId] || [];
+        
+        areaSeatsData.forEach(seat => {
+          const priceId = seatPrices[seat.id];
+          const price = prices.find(p => p.id === priceId) || {};
+          
+          seats.push({
+            id: seat.id,
+            x: seat.x,
+            y: seat.y,
+            width: seat.width || 24,
+            height: seat.height || 24,
+            color: price.color || '#999',
+            status: 'available'
+          });
+        });
+      });
+      
+      // 计算场馆尺寸并居中
+      const minX = Math.min(...seats.map(s => s.x));
+      const maxX = Math.max(...seats.map(s => s.x + s.width));
+      const minY = Math.min(...seats.map(s => s.y));
+      const maxY = Math.max(...seats.map(s => s.y + s.height));
+      
+      const venueWidth = maxX - minX;
+      const venueHeight = maxY - minY;
+      
+      // 居中到画布
+      const canvasWidth = window.innerWidth;
+      const canvasHeight = window.innerHeight;
+      const centerOffsetX = (canvasWidth / scale - venueWidth) / 2 - minX;
+      const centerOffsetY = (canvasHeight / scale - venueHeight) / 2 - minY;
+      
+      seats.forEach(seat => {
+        seat.x += centerOffsetX;
+        seat.y += centerOffsetY;
+      });
+      
+      areas.forEach(area => {
+        area.x += centerOffsetX;
+        area.y += centerOffsetY;
+      });
+      
+      // 初始位置：让场馆中心显示在屏幕中心
+      const venueCenterX = (minX + maxX) / 2 + centerOffsetX;
+      const venueCenterY = (minY + maxY) / 2 + centerOffsetY;
+      offsetX = canvasWidth / 2 - venueCenterX * scale;
+      offsetY = canvasHeight / 2 - venueCenterY * scale;
+      
+      loading.style.display = 'none';
+      render();
+      
+      console.log('座位加载完成:', seats.length);
+    }
+    
+    // 渲染
+    function render() {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      
+      // 清空画布
+      ctx.clearRect(0, 0, width, height);
+      
+      // 保存状态
+      ctx.save();
+      
+      // 应用变换
+      ctx.translate(offsetX, offsetY);
+      ctx.scale(scale, scale);
+      
+      // 渲染区域边框
+      areas.forEach(area => {
+        ctx.strokeStyle = area.stroke || '#999';
+        ctx.lineWidth = 2 / scale;
+        ctx.strokeRect(area.x, area.y, area.width, area.height);
+      });
+      
+      // 渲染座位
+      seats.forEach(seat => {
+        const isSelected = selectedSeats.has(seat.id);
+        
+        ctx.beginPath();
+        ctx.arc(
+          seat.x + seat.width / 2,
+          seat.y + seat.height / 2,
+          seat.width / 2,
+          0,
+          Math.PI * 2
+        );
+        
+        if (seat.status === 'sold') {
+          ctx.fillStyle = '#d0d0d0';
+        } else if (isSelected) {
+          ctx.fillStyle = '#333';
+        } else {
+          ctx.fillStyle = seat.color;
+        }
+        
+        ctx.fill();
+        
+        // 选中标记
+        if (isSelected) {
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 2 / scale;
+          ctx.stroke();
+        }
+      });
+      
+      // 恢复状态
+      ctx.restore();
+    }
+    
+    // 触摸事件处理
+    let touches = [];
+    
+    canvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      touches = Array.from(e.touches);
+      
+      if (touches.length === 1) {
+        isDragging = true;
+        lastX = touches[0].clientX;
+        lastY = touches[0].clientY;
+      } else if (touches.length === 2) {
+        isDragging = false;
+        const dx = touches[1].clientX - touches[0].clientX;
+        const dy = touches[1].clientY - touches[0].clientY;
+        lastDistance = Math.sqrt(dx * dx + dy * dy);
+      }
+    });
+    
+    canvas.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      touches = Array.from(e.touches);
+      
+      if (touches.length === 1 && isDragging) {
+        // 拖动
+        const dx = touches[0].clientX - lastX;
+        const dy = touches[0].clientY - lastY;
+        offsetX += dx;
+        offsetY += dy;
+        lastX = touches[0].clientX;
+        lastY = touches[0].clientY;
+        render();
+      } else if (touches.length === 2) {
+        // 缩放
+        const dx = touches[1].clientX - touches[0].clientX;
+        const dy = touches[1].clientY - touches[0].clientY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        
+        if (lastDistance > 0) {
+          const centerX = (touches[0].clientX + touches[1].clientX) / 2;
+          const centerY = (touches[0].clientY + touches[1].clientY) / 2;
+          
+          const scaleChange = distance / lastDistance;
+          const newScale = Math.max(0.2, Math.min(3, scale * scaleChange));
+          
+          // 以触摸中心点为缩放中心
+          const worldX = (centerX - offsetX) / scale;
+          const worldY = (centerY - offsetY) / scale;
+          
+          offsetX = centerX - worldX * newScale;
+          offsetY = centerY - worldY * newScale;
+          scale = newScale;
+        }
+        
+        lastDistance = distance;
+        render();
+      }
+    });
+    
+    canvas.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      touches = Array.from(e.touches);
+      
+      if (touches.length === 0) {
+        isDragging = false;
+        lastDistance = 0;
+        
+        // 检测点击
+        if (e.changedTouches.length === 1) {
+          const touch = e.changedTouches[0];
+          handleTap(touch.clientX, touch.clientY);
+        }
+      } else if (touches.length === 1) {
+        lastX = touches[0].clientX;
+        lastY = touches[0].clientY;
+        lastDistance = 0;
+      }
+    });
+    
+    // 处理点击
+    function handleTap(clientX, clientY) {
+      const worldX = (clientX - offsetX) / scale;
+      const worldY = (clientY - offsetY) / scale;
+      
+      // 查找点击的座位
+      for (let i = seats.length - 1; i >= 0; i--) {
+        const seat = seats[i];
+        const dx = worldX - (seat.x + seat.width / 2);
+        const dy = worldY - (seat.y + seat.height / 2);
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        
+        if (distance <= seat.width / 2) {
+          if (seat.status === 'sold') {
+            notifyParent('toast', { message: '该座位已售出' });
+            return;
+          }
+          
+          if (selectedSeats.has(seat.id)) {
+            selectedSeats.delete(seat.id);
+          } else {
+            selectedSeats.add(seat.id);
+          }
+          
+          // 通知父页面
+          notifyParent('seatSelected', {
+            seatId: seat.id,
+            selected: selectedSeats.has(seat.id),
+            selectedCount: selectedSeats.size
+          });
+          
+          render();
+          return;
+        }
+      }
+    }
+    
+    // 与父页面通信
+    function notifyParent(type, data) {
+      if (window.uni) {
+        uni.postMessage({
+          data: { type, ...data }
+        });
+      }
+    }
+    
+    // 接收父页面消息
+    window.addEventListener('message', (e) => {
+      const { type, data } = e.data;
+      
+      if (type === 'loadTemplate') {
+        loadSeatData(data);
+      } else if (type === 'reset') {
+        selectedSeats.clear();
+        render();
+      }
+    });
+    
+    // 鼠标事件（开发调试用）
+    let isMouseDown = false;
+    
+    canvas.addEventListener('mousedown', (e) => {
+      isMouseDown = true;
+      lastX = e.clientX;
+      lastY = e.clientY;
+    });
+    
+    canvas.addEventListener('mousemove', (e) => {
+      if (isMouseDown) {
+        const dx = e.clientX - lastX;
+        const dy = e.clientY - lastY;
+        offsetX += dx;
+        offsetY += dy;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        render();
+      }
+    });
+    
+    canvas.addEventListener('mouseup', () => {
+      isMouseDown = false;
+    });
+    
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const scaleChange = e.deltaY > 0 ? 0.9 : 1.1;
+      const newScale = Math.max(0.2, Math.min(3, scale * scaleChange));
+      
+      const worldX = (e.clientX - offsetX) / scale;
+      const worldY = (e.clientY - offsetY) / scale;
+      
+      offsetX = e.clientX - worldX * newScale;
+      offsetY = e.clientY - worldY * newScale;
+      scale = newScale;
+      
+      render();
+    });
+    
+    // 接收父页面消息
+    window.addEventListener('message', (e) => {
+      if (e.data && e.data.type === 'reset') {
+        selectedSeats.clear();
+        render();
+      }
+    });
+    
+    // 从 localStorage 加载数据
+    function loadFromStorage() {
+      console.log('=== 开始加载数据 ===');
+      console.log('URL:', window.location.href);
+      console.log('localStorage 可用:', typeof localStorage !== 'undefined');
+      
+      try {
+        // 尝试多个可能的 key
+        const keys = ['__webview_seat_data__', 'seatTemplateData', 'uni-storage-__webview_seat_data__'];
+        
+        for (const key of keys) {
+          console.log('尝试读取 key:', key);
+          const storageData = localStorage.getItem(key);
+          
+          if (storageData) {
+            console.log('找到数据，key:', key, '长度:', storageData.length);
+            const templateData = JSON.parse(storageData);
+            console.log('解析成功，模板信息:', {
+              version: templateData.version,
+              type: templateData.type,
+              areas: templateData.areas?.length
+            });
+            loadSeatData(templateData);
+            return;
+          }
+        }
+        
+        // 都失败了
+        console.error('所有 key 都未找到数据');
+        console.error('localStorage 中的所有 keys:', Object.keys(localStorage));
+        loading.textContent = '未找到数据，请返回重试';
+      } catch (e) {
+        console.error('加载失败:', e);
+        loading.textContent = '加载失败: ' + e.message;
+      }
+    }
+    
+    // 初始化
+    console.log('=== Canvas 初始化完成 ===');
+    console.log('页面 URL:', window.location.href);
+    console.log('User Agent:', navigator.userAgent);
+    
+    // 延迟加载，等待 localStorage 同步
+    setTimeout(() => {
+      loadFromStorage();
+    }, 500);
+  </script>
+</body>
+</html>
